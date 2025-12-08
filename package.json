@@ -1,0 +1,35 @@
+{
+  "name": "pearl-radio-mysql-backend",
+  "version": "1.0.0",
+  "description": "Pearl Radio Station MySQL Backend Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-superadmin": "node init-superadmin.js",
+    "test": "node test-api.js",
+    "test-connection": "node test-connection.js"
+  },
+  "keywords": [
+    "pearl",
+    "radio",
+    "mysql",
+    "express"
+  ],
+  "author": "Pearl-Solution.com Inc.",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "mysql2": "^3.6.5",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
