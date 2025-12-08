@@ -18,11 +18,11 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-producti
 // MySQL Connection Pool
 // ========================================
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'pearl_radio',
+  host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+  port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
+  user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
+  password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
+  database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'pearl_radio',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -267,6 +267,63 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
+// Superadmin login
+app.post('/auth/superadmin-login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    
+    // Check superadmin table
+    const [superadmins] = await pool.query('SELECT * FROM superadmin WHERE email = ?', [email]);
+    
+    if (superadmins.length === 0) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    const superadmin = superadmins[0];
+    
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, superadmin.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    // Generate token
+    const token = jwt.sign(
+      { userId: superadmin.id, email: superadmin.email, role: 'superadmin' },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    console.log('✅ Superadmin login successful:', email);
+    
+    res.json({
+      success: true,
+      user: {
+        id: superadmin.id,
+        email: superadmin.email,
+        user_metadata: {
+          role: 'superadmin'
+        }
+      },
+      session: {
+        access_token: token,
+        user: {
+          id: superadmin.id,
+          email: superadmin.email
+        }
+      },
+      isSuperAdmin: true
+    });
+  } catch (error) {
+    console.error('❌ Superadmin login error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ========================================
 // USERS API (Company Admins)
 // ========================================
@@ -349,15 +406,38 @@ app.post('/users/:id/approve', async (req, res) => {
     const subscriptionEnd = new Date(subscriptionStart);
     subscriptionEnd.setDate(subscriptionEnd.getDate() + 30);
     
+    // Update user status to active
     await pool.query(
       `UPDATE users SET account_status = 'active', subscription_start = ?, subscription_end = ? WHERE id = ?`,
       [subscriptionStart, subscriptionEnd, req.params.id]
     );
     
-    const [updatedUser] = await pool.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    // Get the user info to create company profile
+    const [users] = await pool.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    const user = users[0];
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Check if company_profiles record already exists
+    const [existingProfiles] = await pool.query(
+      'SELECT id FROM company_profiles WHERE user_id = ?',
+      [req.params.id]
+    );
+    
+    // Create company_profiles record if it doesn't exist
+    if (existingProfiles.length === 0) {
+      await pool.query(
+        `INSERT INTO company_profiles (user_id, company_name, email, phone, address, city, country) 
+         VALUES (?, ?, ?, '', '', '', '')`,
+        [req.params.id, user.company_name, user.email]
+      );
+      console.log('✅ Company profile created for user:', req.params.id);
+    }
     
     console.log('✅ User approved:', req.params.id);
-    res.json(updatedUser[0]);
+    res.json(user);
   } catch (error) {
     console.error('❌ Error approving user:', error);
     res.status(500).json({ error: error.message });
@@ -367,9 +447,38 @@ app.post('/users/:id/approve', async (req, res) => {
 // Delete user
 app.delete('/users/:id', async (req, res) => {
   try {
-    await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
-    console.log('🗑️ User deleted:', req.params.id);
-    res.json({ success: true });
+    const userId = req.params.id;
+    
+    // Delete in the correct order to avoid foreign key constraints
+    // 1. Delete company profile
+    await pool.query('DELETE FROM company_profiles WHERE user_id = ?', [userId]);
+    console.log('🗑️ Company profile deleted for user:', userId);
+    
+    // 2. Delete all stores for this user
+    await pool.query('DELETE FROM stores WHERE user_id = ?', [userId]);
+    console.log('🗑️ Stores deleted for user:', userId);
+    
+    // 3. Delete all branch users for this user
+    await pool.query('DELETE FROM branch_users WHERE company_id = ?', [userId]);
+    console.log('🗑️ Branch users deleted for user:', userId);
+    
+    // 4. Delete all music for this user
+    await pool.query('DELETE FROM music WHERE user_id = ?', [userId]);
+    console.log('🗑️ Music deleted for user:', userId);
+    
+    // 5. Delete all playlists for this user
+    await pool.query('DELETE FROM playlists WHERE user_id = ?', [userId]);
+    console.log('🗑️ Playlists deleted for user:', userId);
+    
+    // 6. Delete all announcements for this user
+    await pool.query('DELETE FROM announcements WHERE user_id = ?', [userId]);
+    console.log('🗑️ Announcements deleted for user:', userId);
+    
+    // 7. Finally delete the user
+    await pool.query('DELETE FROM users WHERE id = ?', [userId]);
+    console.log('🗑️ User deleted:', userId);
+    
+    res.json({ success: true, message: 'User and all associated data deleted successfully' });
   } catch (error) {
     console.error('❌ Error deleting user:', error);
     res.status(500).json({ error: error.message });
@@ -401,29 +510,42 @@ app.post('/profiles', async (req, res) => {
   try {
     const profile = req.body;
     
+    console.log('📝 Received profile save request for user:', profile.user_id);
+    console.log('📝 Profile data:', profile);
+    
+    // Validate required fields
+    if (!profile.user_id) {
+      return res.status(400).json({ error: 'user_id is required' });
+    }
+    
     // Check if profile exists
     const [existing] = await pool.query('SELECT id FROM company_profiles WHERE user_id = ?', [profile.user_id]);
     
     if (existing.length > 0) {
       // Update existing profile
+      console.log('🔄 Updating existing profile');
       await pool.query(
         `UPDATE company_profiles SET company_name = ?, email = ?, phone = ?, address = ?, city = ?, country = ?, contact_person = ?, logo_url = ? WHERE user_id = ?`,
-        [profile.company_name, profile.email, profile.phone, profile.address, profile.city, profile.country, profile.contact_person, profile.logo_url, profile.user_id]
+        [profile.company_name, profile.email, profile.phone, profile.address, profile.city, profile.country, profile.contact_person, profile.logo_url || null, profile.user_id]
       );
     } else {
       // Insert new profile
+      console.log('➕ Creating new profile');
       await pool.query(
         `INSERT INTO company_profiles (user_id, company_name, email, phone, address, city, country, contact_person, logo_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [profile.user_id, profile.company_name, profile.email, profile.phone, profile.address, profile.city, profile.country, profile.contact_person, profile.logo_url]
+        [profile.user_id, profile.company_name, profile.email, profile.phone, profile.address, profile.city, profile.country, profile.contact_person, profile.logo_url || null]
       );
     }
     
     const [updatedProfile] = await pool.query('SELECT * FROM company_profiles WHERE user_id = ?', [profile.user_id]);
-    console.log('💾 Profile saved:', profile.company_name);
-    res.json(updatedProfile[0]);
+    console.log('✅ Profile saved successfully:', profile.company_name);
+    res.json({ success: true, profile: updatedProfile[0] });
   } catch (error) {
     console.error('❌ Error saving profile:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Error details:', error.message);
+    console.error('❌ SQL State:', error.sqlState);
+    console.error('❌ SQL Message:', error.sqlMessage);
+    res.status(500).json({ error: error.message || 'Failed to save profile' });
   }
 });
 
