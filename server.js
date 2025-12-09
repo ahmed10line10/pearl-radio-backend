@@ -234,6 +234,31 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
+    // Check account status
+    if (user.account_status === 'pending') {
+      return res.status(403).json({ 
+        error: 'Your account is pending approval. Please wait for admin to approve your account.' 
+      });
+    }
+    
+    if (user.account_status === 'expired') {
+      return res.status(403).json({ 
+        error: 'Your subscription has expired. Please contact support to renew your account.' 
+      });
+    }
+    
+    if (user.account_status === 'banned') {
+      return res.status(403).json({ 
+        error: 'Your account has been suspended. Please contact support for assistance.' 
+      });
+    }
+    
+    if (user.account_status !== 'active') {
+      return res.status(403).json({ 
+        error: 'Your account is not active. Please contact support.' 
+      });
+    }
+    
     // Generate token
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: 'admin' },
@@ -449,34 +474,41 @@ app.delete('/users/:id', async (req, res) => {
   try {
     const userId = req.params.id;
     
+    console.log('🗑️ Starting user deletion process for:', userId);
+    
+    // Helper function to safely delete from table if it exists
+    const safeDelete = async (tableName, column, value) => {
+      try {
+        // Check if table exists
+        const [tables] = await pool.query(
+          "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+          [tableName]
+        );
+        
+        if (tables.length > 0) {
+          await pool.query(`DELETE FROM ${tableName} WHERE ${column} = ?`, [value]);
+          console.log(`✅ Deleted from ${tableName}`);
+        } else {
+          console.log(`⚠️ Table ${tableName} does not exist, skipping...`);
+        }
+      } catch (error) {
+        console.error(`⚠️ Error deleting from ${tableName}:`, error.message);
+        // Continue with other deletions even if one fails
+      }
+    };
+    
     // Delete in the correct order to avoid foreign key constraints
-    // 1. Delete company profile
-    await pool.query('DELETE FROM company_profiles WHERE user_id = ?', [userId]);
-    console.log('🗑️ Company profile deleted for user:', userId);
+    await safeDelete('company_profiles', 'user_id', userId);
+    await safeDelete('branch_users', 'company_id', userId);
+    await safeDelete('stores', 'user_id', userId);
+    await safeDelete('playlists', 'user_id', userId);
+    await safeDelete('announcements', 'user_id', userId);
+    await safeDelete('songs', 'user_id', userId);
+    await safeDelete('music', 'user_id', userId); // Try both table names
     
-    // 2. Delete all stores for this user
-    await pool.query('DELETE FROM stores WHERE user_id = ?', [userId]);
-    console.log('🗑️ Stores deleted for user:', userId);
-    
-    // 3. Delete all branch users for this user
-    await pool.query('DELETE FROM branch_users WHERE company_id = ?', [userId]);
-    console.log('🗑️ Branch users deleted for user:', userId);
-    
-    // 4. Delete all music for this user
-    await pool.query('DELETE FROM music WHERE user_id = ?', [userId]);
-    console.log('🗑️ Music deleted for user:', userId);
-    
-    // 5. Delete all playlists for this user
-    await pool.query('DELETE FROM playlists WHERE user_id = ?', [userId]);
-    console.log('🗑️ Playlists deleted for user:', userId);
-    
-    // 6. Delete all announcements for this user
-    await pool.query('DELETE FROM announcements WHERE user_id = ?', [userId]);
-    console.log('🗑️ Announcements deleted for user:', userId);
-    
-    // 7. Finally delete the user
+    // Finally delete the user
     await pool.query('DELETE FROM users WHERE id = ?', [userId]);
-    console.log('🗑️ User deleted:', userId);
+    console.log('✅ User deleted:', userId);
     
     res.json({ success: true, message: 'User and all associated data deleted successfully' });
   } catch (error) {
